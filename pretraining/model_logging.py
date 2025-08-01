@@ -1,12 +1,13 @@
 import os
 import torch
 from utils import is_main_process
-
-
-if int(os.environ["SLURM_PROCID"]) == 0:
+# Check if the script is running in a distributed environment
+# and if the current process is the main one
+# If using accelerate, this will handle the main process check
+from accelerate import Accelerator
+accelerator = Accelerator()
+if accelerator.is_main_process:
     import wandb
-
-
 class ModelLogger:
     def __init__(self, enable: bool, module):
         self.enable = enable

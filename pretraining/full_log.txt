@@ -1,0 +1,2 @@
+usage: accelerate <command> [<args>]
+Accelerate CLI tool: error: unrecognized arguments: --mixed_precission=fp16
