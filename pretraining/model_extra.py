@@ -126,7 +126,7 @@ class DWAModules(torch.nn.Module):
         self.accumulator = apply_inplace_set(self.accumulator, 0, x)
 
     def forward(self, x, block_idx):
-        assert self.accumulator is not None, "`init_accumulator(x)` needs to be called first"
+        # assert self.accumulator is not None, "`init_accumulator(x)` needs to be called first"
         self.accumulator = apply_inplace_set(
             self.accumulator,
             block_idx + 1,
@@ -183,7 +183,19 @@ class MaskClassifier(nn.Module):
 
     def forward(self, x, masked_lm_labels, num_masked=None):
         if num_masked is None:
-            x = torch.index_select(x.flatten(0, 1), 0, torch.nonzero(masked_lm_labels.flatten() != -100).squeeze())
+            # x = torch.index_select(x.flatten(0, 1), 0, torch.nonzero(masked_lm_labels.flatten() != -100).squeeze())
+            # x = self.nonlinearity(x)
+            # return x
+            ## Note the addition of .squeeze(dim=-1) for safety
+            indices_to_select = torch.nonzero(masked_lm_labels.flatten() != -100).squeeze(dim=-1)
+            
+            # # --- THIS IS THE CRUCIAL FIX ---
+            # if indices_to_select.numel() == 0:
+            #     print(f"!!! RANK {x.device.index}: Found 0 elements to select. Returning empty tensor to avoid NaN.", flush=True)
+            #     output_features = self.nonlinearity[-1].out_features
+            #     return torch.empty(0, output_features, device=x.device, dtype=x.dtype)
+            
+            x = torch.index_select(x.flatten(0, 1), 0, indices_to_select)
             x = self.nonlinearity(x)
             return x
         else:
