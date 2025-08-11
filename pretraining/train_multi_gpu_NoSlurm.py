@@ -51,7 +51,7 @@ def parse_arguments():
     parser.add_argument("--batch_reduction", default=4, type=int, help="The initial batch size reduction factor.")
     parser.add_argument("--learning_rate", default=1e-2, type=float, help="The initial learning rate for Adam.")
     # parser.add_argument("--max_steps", default=9_914 // 2, type=int, help="Total number of training steps to perform.")
-    parser.add_argument("--max_steps", default=9_914 // 16, type=int, help="Total number of training steps to perform.")
+    parser.add_argument("--max_steps", default=9_914// 2, type=int, help="Total number of training steps to perform.")
     
     parser.add_argument("--ema_decay", default=0.999, type=float, help="Exponential moving average decay.")
     parser.add_argument("--validate_every", default=1_000, type=int, help="Run validation after every X training shards.")
