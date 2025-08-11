@@ -10,12 +10,12 @@ class Bert(nn.Module):
     def __init__(self, config, activation_checkpointing=False):
         super().__init__()
         self.embedding = Embedding(config)
-        self.transformer = Encoder(config, activation_checkpointing)
+        self.model = Encoder(config, activation_checkpointing)
         self.classifier = MaskClassifier(config, self.embedding.word_embedding.weight)
 
     def get_contextualized(self, input_ids, attention_mask):
         static_embeddings, relative_embedding = self.embedding(input_ids)
-        contextualized_embeddings = self.transformer(static_embeddings, attention_mask.unsqueeze(1), relative_embedding)
+        contextualized_embeddings = self.model(static_embeddings, attention_mask.unsqueeze(1), relative_embedding)
         return contextualized_embeddings
 
     def forward(self, input_ids, attention_mask, masked_lm_labels, num_masked=None, ratio=None):
