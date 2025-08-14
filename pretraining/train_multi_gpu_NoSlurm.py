@@ -72,7 +72,11 @@ def parse_arguments():
     parser.add_argument("--max_gradient", default=2.0, type=float, help="Max value for gradient clipping.")
     # parser.add_argument('--mixed_precision', default='fp16', type=str, choices=['no', 'fp16', 'bf16'], help="Mixed precision training.")
     # THE CORRECT LINE FOR THIS SCRIPT:
-    parser.add_argument('--mixed_precision', default=True, action=argparse.BooleanOptionalAction, help="Mixed precision training.")    
+    # parser.add_argument('--mixed_precision', default=True, action=argparse.BooleanOptionalAction, help="Mixed precision training.")    
+    mp = parser.add_mutually_exclusive_group()
+    mp.add_argument('--mixed_precision',     dest='mixed_precision', action='store_true',  default=True,  help="Enable mixed precision.")
+    mp.add_argument('--no_mixed_precision',  dest='mixed_precision', action='store_false',                help="Disable mixed precision.")
+
     parser.add_argument('--n_special_tokens', default=16, type=int, help="Number of special tokens.")
     parser.add_argument('--z_loss_weight', default=1e-4, type=float, help="Weight for the z loss.")
     parser.add_argument('--token_weighted_loss', default=False, action=argparse.BooleanOptionalAction, help="Use token weighted loss.")
@@ -86,48 +90,6 @@ def parse_arguments():
     args.output_path = (args.output_dir / args.name).with_suffix(".bin")
 
     return args
-# def setup_training(args, tokenizer):
-#     assert torch.cuda.is_available()
-#     args.n_gpu = torch.cuda.device_count()
-#     # `torchrun` sets these env vars automatically
-#     args.world_size = int(os.environ["WORLD_SIZE"])
-#     args.rank = int(os.environ["RANK"])
-#     args.local_rank = int(os.environ["LOCAL_RANK"])
-    
-
-#     assert args.world_size % args.hybrid_denominator == 0
-
-#     # if args.rank / args.world_size < args.hybrid_numerator / args.hybrid_denominator:
-#     if args.rank * args.hybrid_denominator < args.hybrid_numerator * args.world_size:
-#         args.dataset_type = "masked"
-#     else:
-#         args.dataset_type = "causal"
-
-#     print(f"Dataset type: {args.dataset_type}", flush=True)
-
-#     seed_everything(args.seed + args.rank)
-
-#     torch.distributed.init_process_group(backend="nccl", rank=args.rank, world_size=args.world_size)
-#     if args.rank == 0:
-#         print(f"Group initialized? {torch.distributed.is_initialized()}", flush=True)
-
-#     torch.cuda.set_device(args.local_rank)
-#     args.device = torch.device("cuda", args.local_rank)
-#     print(f"RCCL started on device {args.device}", flush=True)
-#     print(f"host: {gethostname()}, rank: {args.rank}, local_rank: {args.local_rank}")
-
-#     if is_main_process():
-#         print(f"Training for {args.max_steps:,} steps with {get_world_size()} GPUs")
-#         print(f"In total, the model will be trained on 'steps'({args.max_steps:,}) x 'GPUs'({get_world_size()}) x 'batch_size'({args.local_batch_size:,}) x 'seq_len'({args.seq_length:,}) = {args.max_steps * get_world_size() * args.local_batch_size * args.seq_length:,} subword instances")
-
-#     args.vocab_size = tokenizer.get_vocab_size()
-
-#     if is_main_process():
-#         wandb.init(
-#             name=args.name,
-#             project=args.wandb_project,
-#             entity=args.wandb_entity
-#         )
 
 # CORRECTED ORDER
 def setup_training(args, tokenizer):
@@ -149,6 +111,34 @@ def setup_training(args, tokenizer):
     # Step 4: Set the device for the current process
     torch.cuda.set_device(args.local_rank)
     args.device = torch.device("cuda", args.local_rank)
+
+    # --- MIXED PRECISION SETUP (tiny & robust) ---
+    args.use_autocast = bool(args.mixed_precision)
+    args.autocast_dtype = torch.float32
+    args.scaler = None
+
+    if args.use_autocast:
+        # Prefer bf16 if the stack says it's supported; else fp16
+        bf16_ok = False
+        if hasattr(torch.cuda, "is_bf16_supported"):
+            try:
+                bf16_ok = torch.cuda.is_bf16_supported()
+            except Exception:
+                bf16_ok = False
+
+        if bf16_ok:
+            args.autocast_dtype = torch.bfloat16
+            args.scaler = None  # no scaler for bf16
+            if is_main_process():
+                print("[mp] using bf16 autocast", flush=True)
+        else:
+            args.autocast_dtype = torch.float16
+            args.scaler = torch.cuda.amp.GradScaler()  # scaler only for fp16
+            if is_main_process():
+                print("[mp] using fp16 autocast + GradScaler", flush=True)
+    else:
+        if is_main_process():
+            print("[mp] disabled", flush=True)
 
     if is_main_process():
         print(f"Host: {gethostname()}, Rank: {args.rank}, Local_Rank: {args.local_rank}, Device: {args.device}")
@@ -305,7 +295,8 @@ def training_epoch(model, ema_model, train_dataloader, valid_dataloader, optimiz
 
         # forward pass, do a more detailed check of the model every 100 steps
         # with torch.cuda.amp.autocast(args.mixed_precision, dtype=torch.bfloat16):
-        with torch.amp.autocast(device_type='cuda', enabled=args.mixed_precision, dtype=torch.bfloat16):        
+        #with torch.amp.autocast(device_type='cuda', enabled=args.mixed_precision, dtype=torch.bfloat16):
+        with torch.amp.autocast(device_type='cuda', enabled=args.use_autocast, dtype=args.autocast_dtype):
             with ModelLogger(enable=global_step % 100 == 0, module=model):
                 loss, accuracy, z_loss, num_tokens = model(input_ids, attention_mask, target_ids)
                 if local_step % 1000 ==0:
@@ -331,8 +322,13 @@ def training_epoch(model, ema_model, train_dataloader, valid_dataloader, optimiz
             # For now, a simple exit will work for debugging.
             exit()
         # backward pass through both losses
-        ((loss + args.z_loss_weight * z_loss) * weight).backward()
-
+        # ((loss + args.z_loss_weight * z_loss) * weight).backward()
+        # new:
+        loss_total = (loss + args.z_loss_weight * z_loss) * weight
+        if args.scaler is not None:
+            args.scaler.scale(loss_total).backward()
+        else:
+            loss_total.backward()
         # add the tracked metrics (for gradient accumulation)
         total_loss += loss.detach() * weight
         total_accuracy += accuracy * weight
@@ -342,12 +338,23 @@ def training_epoch(model, ema_model, train_dataloader, valid_dataloader, optimiz
         # gradient accumulation -- if we have accumulated enough gradients, we can perform the optimizer step; otherwise, we just continue and backpropagate through the next batch
         if (local_step + 1) % args.accumulate_steps != 0:
             continue
+        # Before clipping, so clip sees real grads in fp16
+        if args.scaler is not None:
+            args.scaler.unscale_(optimizer)
 
         # clip the gradients
         total_grad_norm += nn.utils.clip_grad_norm_(model.parameters(), args.max_gradient) * weight
 
-        # optimizer step
-        optimizer.step()
+        # # optimizer step
+        # optimizer.step()
+        # scheduler.step()
+
+        # new:
+        if args.scaler is not None:
+            args.scaler.step(optimizer)
+            args.scaler.update()
+        else:
+            optimizer.step()
         scheduler.step()
 
         with torch.no_grad():
