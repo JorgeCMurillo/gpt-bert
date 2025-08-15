@@ -565,7 +565,15 @@ if __name__ == "__main__":
 
     args = parse_arguments()
 
-    tokenizer = Tokenizer.from_file(str(args.tokenizer_path))
+    # tokenizer = Tokenizer.from_file(str(args.tokenizer_path))
+    try:
+        tokenizer = Tokenizer.from_file(str(args.tokenizer_path))
+    except Exception:
+        from transformers import PreTrainedTokenizerFast
+        tok_fast = PreTrainedTokenizerFast(tokenizer_file=str(args.tokenizer_path))
+        # tok_fast.backend_tokenizer is the same Rust Tokenizer object your code expects
+        tokenizer = tok_fast.backend_tokenizer
+
     setup_training(args, tokenizer)
     model, ema_model, optimizer, scheduler, global_step, start_epoch = prepare_model_and_optimizer(args)
 
