@@ -28,7 +28,7 @@ from model_logging import ModelLogger
 
 if int(os.environ.get("RANK", "0")) == 0: # Use .get() for safety if not in distributed mode
     import wandb
-    wandb.login(key="10b57f6290f20445be01d06dfc6763bab9683af4")
+    wandb.login()
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -100,17 +100,24 @@ def setup_training(args, tokenizer):
     args.rank = int(os.environ["RANK"])
     args.local_rank = int(os.environ["LOCAL_RANK"])
     
-    # Step 2: INITIALIZE THE PROCESS GROUP IMMEDIATELY!
-    # This MUST happen before any other torch.distributed calls.
-    torch.distributed.init_process_group(backend="nccl", rank=args.rank, world_size=args.world_size)
+    # # Step 2: INITIALIZE THE PROCESS GROUP IMMEDIATELY!
+    # # This MUST happen before any other torch.distributed calls.
+    # torch.distributed.init_process_group(backend="nccl", rank=args.rank, world_size=args.world_size)
     
-    # Step 3: Now that the group is initialized, you can safely use functions like is_main_process()
-    if is_main_process():
-        print("Process group initialized successfully!")
+    # # Step 3: Now that the group is initialized, you can safely use functions like is_main_process()
+    # if is_main_process():
+    #     print("Process group initialized successfully!")
         
-    # Step 4: Set the device for the current process
+    # # Step 4: Set the device for the current process
+    # torch.cuda.set_device(args.local_rank)
+    # args.device = torch.device("cuda", args.local_rank)
+    # Step 2: Bind this process to its GPU *first*
     torch.cuda.set_device(args.local_rank)
     args.device = torch.device("cuda", args.local_rank)
+
+    # Step 3: Now bring up the process group
+    torch.distributed.init_process_group(backend="nccl", rank=args.rank, world_size=args.world_size)
+
 
     # --- MIXED PRECISION SETUP (tiny & robust) ---
     args.use_autocast = bool(args.mixed_precision)
