@@ -242,14 +242,36 @@ def prepare_model_and_optimizer(args):
         0.1
     )
 
+    # model = DistributedDataParallel(
+    #     model,
+    #     device_ids=[args.local_rank],
+    #     bucket_cap_mb=torch.cuda.get_device_properties(args.device).total_memory,
+    #     broadcast_buffers=False,
+    #     gradient_as_bucket_view=True,
+    #     static_graph=True
+    # )
+
     model = DistributedDataParallel(
         model,
         device_ids=[args.local_rank],
-        bucket_cap_mb=torch.cuda.get_device_properties(args.device).total_memory,
+        bucket_cap_mb=25,
         broadcast_buffers=False,
         gradient_as_bucket_view=True,
         static_graph=True
     )
+
+
+    # # --- AFTER ---
+    # if args.world_size > 1:
+    #     print(f"--- Wrapping model with DDP for {args.world_size} GPUs ---", flush=True)
+    #     model = DistributedDataParallel(
+    #         model,
+    #         device_ids=[args.local_rank],
+    #         bucket_cap_mb=25,
+    #         broadcast_buffers=False,
+    #         gradient_as_bucket_view=True,
+    #         static_graph=True
+    #     )
 
     ema_model: nn.Module = copy.deepcopy(model.module)
     for param in ema_model.parameters():
