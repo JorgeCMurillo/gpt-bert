@@ -47,14 +47,14 @@ def parse_arguments():
     parser.add_argument("--hybrid_denominator", default=16, type=int, help="The denominator of the hybrid ratio (the number of GPUs should be divisible by this number).")
     parser.add_argument("--seq_length", default=128, type=int, help="Sequence length for training.")
     parser.add_argument("--local_batch_size", default=256//4, type=int, help="Batch size for training per GPU.")
-    parser.add_argument("--global_batch_size", default= 16384//32, type=int, help="Total batch size for training per GPUs and per grad accumulation step.")
+    parser.add_argument("--global_batch_size", default= 16384//16, type=int, help="Total batch size for training per GPUs and per grad accumulation step.")
     parser.add_argument("--batch_reduction", default=4, type=int, help="The initial batch size reduction factor.")
     parser.add_argument("--learning_rate", default=1e-2, type=float, help="The initial learning rate for Adam.")
     # parser.add_argument("--max_steps", default=9_914 // 2, type=int, help="Total number of training steps to perform.")
-    parser.add_argument("--max_steps", default=9_914// 2, type=int, help="Total number of training steps to perform.")
+    parser.add_argument("--max_steps", default=9_914, type=int, help="Total number of training steps to perform.")
     
     parser.add_argument("--ema_decay", default=0.999, type=float, help="Exponential moving average decay.")
-    parser.add_argument("--validate_every", default=1_000, type=int, help="Run validation after every X training shards.")
+    parser.add_argument("--validate_every", default= 125, type=int, help="Run validation after every X training shards.")
     parser.add_argument("--validation_steps", default=1, type=int, help="Number of validation steps.")
     parser.add_argument("--log_stats_every", default=100, type=int, help="Log stats every X steps.")
     parser.add_argument("--warmup_proportion", default=0.016, type=float, help="Proportion of training to perform linear learning rate warmup for. E.g., 0.1 = 10%% of training.")
@@ -323,13 +323,16 @@ def training_epoch(model, ema_model, train_dataloader, valid_dataloader, optimiz
         input_ids, attention_mask, target_ids, mask_p = input_ids_, attention_mask_, target_ids_, mask_p_
 
         # forward pass, do a more detailed check of the model every 100 steps
-        # with torch.cuda.amp.autocast(args.mixed_precision, dtype=torch.bfloat16):
-        #with torch.amp.autocast(device_type='cuda', enabled=args.mixed_precision, dtype=torch.bfloat16):
+        # with torch.amp.autocast(device_type='cuda', enabled=args.use_autocast, dtype=args.autocast_dtype):
+        #     with ModelLogger(enable=global_step % 100 == 0, module=model):
+        #         loss, accuracy, z_loss, num_tokens = model(input_ids, attention_mask, target_ids)
+        #         if local_step % 1000 ==0:
+        #             print(loss.item())
         with torch.amp.autocast(device_type='cuda', enabled=args.use_autocast, dtype=args.autocast_dtype):
-            with ModelLogger(enable=global_step % 100 == 0, module=model):
-                loss, accuracy, z_loss, num_tokens = model(input_ids, attention_mask, target_ids)
-                if local_step % 1000 ==0:
-                    print(loss.item())
+                    # --- ModelLogger TEMPORARILY DISABLED FOR DEBUGGING ---
+                    loss, accuracy, z_loss, num_tokens = model(input_ids, attention_mask, target_ids)
+                    if is_main_process() and local_step % 1000 == 0:
+                        print(loss.item())
 
         # get the next batch
         if local_step < num_steps - 1:
@@ -397,11 +400,12 @@ def training_epoch(model, ema_model, train_dataloader, valid_dataloader, optimiz
                 total_mlm_loss = total_loss / (args.hybrid_numerator / args.hybrid_denominator)
                 total_clm_loss = torch.zeros_like(total_mlm_loss)
                 total_mask_p = total_mask_p / (args.hybrid_numerator / args.hybrid_denominator)
+                print(' masked objective',total_mlm_loss)
             else:
                 total_clm_loss = total_loss / (1 - args.hybrid_numerator / args.hybrid_denominator)
                 total_mlm_loss = torch.zeros_like(total_clm_loss)
                 total_mask_p = torch.zeros_like(total_mask_p)
-
+                print(' causal objective', total_clm_loss)
             # accumulate the metrics across GPUs
             metrics = torch.stack([total_loss, total_accuracy, total_z_loss, total_mask_p, total_mlm_loss, total_clm_loss])
             torch.distributed.all_reduce(metrics, torch.distributed.ReduceOp.AVG)
@@ -442,6 +446,17 @@ def training_epoch(model, ema_model, train_dataloader, valid_dataloader, optimiz
         if (global_step + 1) % args.validate_every == 0:
             validation_epoch(model, valid_dataloader, epoch, args)
             model.train()
+
+            # Get allocated memory
+            allocated_memory = torch.cuda.memory_allocated()
+            print(f"Allocated GPU memory: {allocated_memory / (1024**2):.2f} MB")
+
+            # Get reserved memory
+            reserved_memory = torch.cuda.memory_reserved()
+            print(f"Reserved GPU memory: {reserved_memory / (1024**2):.2f} MB")
+
+            # Get a detailed memory summary
+            print(torch.cuda.memory_summary())
 
         # log the stats and commit
         if is_main_process():
